@@ -90,6 +90,9 @@ import {
 } from "./server/health-state.js";
 import { loadGatewayTlsRuntime } from "./server/tls.js";
 import { ensureGatewayStartupAuth } from "./startup-auth.js";
+import { createTelegramWebhookHttpHandler } from "../telegram/webhook.js";
+import { registerTelegramHttpHandler } from "../telegram/http/index.js";
+import { resolveTelegramToken } from "../telegram/token.js";
 
 export { __resetModelCatalogCacheForTest } from "./server-model-catalog.js";
 
@@ -233,6 +236,9 @@ export async function startGatewayServer(
     }
   }
 
+  const telegramHandlerCleanups: Array<() => void> = [];
+  const telegramHandlerStops: Array<() => void> = [];
+
   let cfgAtStart = loadConfig();
   const authBootstrap = await ensureGatewayStartupAuth({
     cfg: cfgAtStart,
@@ -242,6 +248,41 @@ export async function startGatewayServer(
     persist: true,
   });
   cfgAtStart = authBootstrap.cfg;
+
+  if (!minimalTestGateway) {
+    try {
+      const telegramToken = resolveTelegramToken(cfgAtStart, {
+        envToken: process.env.TELEGRAM_BOT_TOKEN,
+      });
+      const secret = (
+        process.env.TELEGRAM_WEBHOOK_SECRET ?? cfgAtStart.channels?.telegram?.webhookSecret ?? ""
+      ).trim();
+      const path = (
+        process.env.TELEGRAM_WEBHOOK_PATH ??
+        cfgAtStart.channels?.telegram?.webhookPath ??
+        "/telegram/webhook"
+      ).trim();
+      if (telegramToken.token && secret) {
+        const { path: normalizedPath, handler, stop } = createTelegramWebhookHttpHandler({
+          token: telegramToken.token,
+          config: cfgAtStart,
+          secret,
+          path,
+        });
+        telegramHandlerStops.push(stop);
+        telegramHandlerCleanups.push(
+          registerTelegramHttpHandler({
+            path: normalizedPath,
+            handler,
+            log: (message: string) => log.info(message),
+          }),
+        );
+        log.info(`telegram webhook mounted at ${normalizedPath}`);
+      }
+    } catch (err) {
+      log.warn(`telegram webhook setup failed: ${String(err)}`);
+    }
+  }
   if (authBootstrap.generatedToken) {
     if (authBootstrap.persistedGeneratedToken) {
       log.info(
@@ -778,6 +819,20 @@ export async function startGatewayServer(
       skillsChangeUnsub();
       authRateLimiter?.dispose();
       channelHealthMonitor?.stop();
+      for (const cleanup of telegramHandlerCleanups) {
+        try {
+          cleanup();
+        } catch {
+          /* ignore */
+        }
+      }
+      for (const stop of telegramHandlerStops) {
+        try {
+          stop();
+        } catch {
+          /* ignore */
+        }
+      }
       await close(opts);
     },
   };
