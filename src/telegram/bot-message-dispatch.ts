@@ -419,6 +419,13 @@ export const dispatchTelegramMessage = async ({
   }
 
   try {
+    const prevActorTelegramUserId = process.env.OPENCLAW_ACTOR_TELEGRAM_USER_ID;
+    if (ctxPayload.SenderId) {
+      process.env.OPENCLAW_ACTOR_TELEGRAM_USER_ID = String(ctxPayload.SenderId);
+    } else {
+      delete process.env.OPENCLAW_ACTOR_TELEGRAM_USER_ID;
+    }
+
     ({ queuedFinal } = await dispatchReplyWithBufferedBlockDispatcher({
       ctx: ctxPayload,
       cfg,
@@ -590,6 +597,11 @@ export const dispatchTelegramMessage = async ({
         onModelSelected,
       },
     }));
+    if (typeof prevActorTelegramUserId === "string") {
+      process.env.OPENCLAW_ACTOR_TELEGRAM_USER_ID = prevActorTelegramUserId;
+    } else {
+      delete process.env.OPENCLAW_ACTOR_TELEGRAM_USER_ID;
+    }
   } finally {
     // Must stop() first to flush debounced content before clear() wipes state.
     const streamCleanupStates = new Map<
